@@ -9,8 +9,15 @@
     }
   ],
   "dependencies": {
+    "com.unity.ai.navigation": "1.1.5",
+    "com.unity.feature.vr": "1.0.0",
+    "com.unity.ide.vscode": "1.2.5",
+    "com.unity.toolchain.win-x86_64-linux-x86_64": "2.0.10",
     "com.unity.ugui": "1.0.0",
+    "com.unity.xr.oculus": "4.1.2",
+    "com.unity.xr.openxr": "1.9.1",
     "jp.keijiro.noiseshader": "2.0.0",
-    "jp.keijiro.test-assets": "1.0.1"
+    "jp.keijiro.test-assets": "1.0.1",
+    "com.unity.modules.androidjni": "1.0.0"
   }
 }

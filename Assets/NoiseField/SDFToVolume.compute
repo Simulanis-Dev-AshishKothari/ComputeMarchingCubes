@@ -1,0 +1,41 @@
+#pragma kernel SDFToVolume
+#pragma kernel CopySDF
+
+Texture3D<float> SDFTexture;
+SamplerState sampler_SDFTexture;
+
+// For copying
+Texture3D<float> SourceSDF;
+SamplerState sampler_SourceSDF;
+RWTexture3D<float> DestSDF;
+
+uint3 Dims;
+float Scale;
+RWStructuredBuffer<float> Voxels;
+
+[numthreads(8, 8, 8)]
+void SDFToVolume(uint3 id: SV_DispatchThreadID)
+{
+    if (id.x >= Dims.x || id.y >= Dims.y || id.z >= Dims.z)
+        return;
+    
+    // Sample the SDF texture at the current voxel position
+    float3 uv = (float3(id) + 0.5) / float3(Dims);
+    float sdfValue = SDFTexture.SampleLevel(sampler_SDFTexture, uv, 0);
+    
+    // Store the SDF value directly
+    uint index = id.x + Dims.x * (id.y + Dims.y * id.z);
+    Voxels[index] = sdfValue;
+}
+
+[numthreads(8, 8, 8)]
+void CopySDF(uint3 id: SV_DispatchThreadID)
+{
+    if (id.x >= Dims.x || id.y >= Dims.y || id.z >= Dims.z)
+        return;
+    
+    // Copy SDF value from source to destination
+    float3 uv = (float3(id) + 0.5) / float3(Dims);
+    float sdfValue = SourceSDF.SampleLevel(sampler_SourceSDF, uv, 0);
+    DestSDF[id] = sdfValue;
+}

@@ -1,0 +1,58 @@
+#pragma kernel CutSDF
+#pragma kernel CopySDF
+
+RWTexture3D<float> SDFTexture;
+
+// For copying
+Texture3D<float> SourceSDF;
+SamplerState sampler_SourceSDF;
+RWTexture3D<float> DestSDF;
+
+uint3 Dims;
+float3 CutCenter;
+float CutRadius;
+float CutDepth;
+float3 CutDirection;
+
+[numthreads(8, 8, 8)]
+void CutSDF(uint3 id: SV_DispatchThreadID)
+{
+    uint3 dims;
+    SDFTexture.GetDimensions(dims.x, dims.y, dims.z);
+    
+    if (id.x >= dims.x || id.y >= dims.y || id.z >= dims.z)
+        return;
+    
+    // Convert texture coordinates to world space
+    float3 worldPos = (float3(id) + 0.5) / float3(dims);
+    
+    // Calculate distance from cut center
+    float distanceToCenter = length(worldPos - CutCenter);
+    
+    // Check if this voxel is within the cutting radius
+    if (distanceToCenter <= CutRadius)
+    {
+        // Calculate how much to cut based on distance from center
+        float cutStrength = 1.0 - (distanceToCenter / CutRadius);
+        cutStrength = smoothstep(0.0, 1.0, cutStrength);
+        
+        // Apply the cut by subtracting values (making it "outside" the surface)
+        float currentSDF = SDFTexture[id];
+        float cutAmount = CutDepth * cutStrength;
+        
+        // Subtract the cut amount to make the SDF more positive (further from surface)
+        SDFTexture[id] = currentSDF - cutAmount;
+    }
+}
+
+[numthreads(8, 8, 8)]
+void CopySDF(uint3 id: SV_DispatchThreadID)
+{
+    if (id.x >= Dims.x || id.y >= Dims.y || id.z >= Dims.z)
+        return;
+    
+    // Copy SDF value from source to destination
+    float3 uv = (float3(id) + 0.5) / float3(Dims);
+    float sdfValue = SourceSDF.SampleLevel(sampler_SourceSDF, uv, 0);
+    DestSDF[id] = sdfValue;
+}
