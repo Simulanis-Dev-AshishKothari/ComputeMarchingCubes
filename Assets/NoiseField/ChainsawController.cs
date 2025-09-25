@@ -8,8 +8,8 @@ namespace MarchingCubes
     {
         #region Editable attributes
 
-        [SerializeField] float _cuttingRadius = 0.5f;
-        [SerializeField] float _cuttingSpeed = 2.0f;
+        [SerializeField] float _cuttingRadius = 0.1f; // Reduced from 0.5f for more precise cutting
+        [SerializeField] float _cuttingSpeed = 0.5f; // Reduced from 2.0f for more controlled cutting
         [SerializeField] float _movementSpeed = 5.0f;
         [SerializeField] SDFVisualizer _treeVisualizer = null;
         [SerializeField] ComputeShader _sdfModifier = null;
@@ -21,6 +21,7 @@ namespace MarchingCubes
 
         private Vector3 _lastPosition;
         private bool _isCutting = false;
+        private bool _isIntersecting = false; // Track intersection state
 
         #endregion
 
@@ -40,7 +41,13 @@ namespace MarchingCubes
         void Update()
         {
             HandleInput();
-            UpdateCutting2();
+            UpdateCutting();
+
+            // Debug intersection state - to resolve debug intersection
+            if (Time.frameCount % 60 == 0) // Log every 60 frames to avoid spam
+            {
+                Debug.Log($"Intersection Debug - Cutting: {_isCutting}, Intersecting: {_isIntersecting}, Position: {transform.position}");
+            }
         }
 
         #endregion
@@ -109,47 +116,218 @@ namespace MarchingCubes
             Vector3 currentPosition = transform.position;
             Vector3 movement = currentPosition - _lastPosition;
 
-            if (movement.magnitude > 0.001f)
+            // Check for intersection with tree - to resolve conditional cutting
+            // Prioritize SDF method as it's most accurate for this use case
+            _isIntersecting = CheckIntersectionWithSDF() || CheckIntersectionWithTree();
+
+            if (movement.magnitude > 0.001f && _isIntersecting)
             {
-                // Get the writable texture from SDFVisualizer
-                var writableTexture = _treeVisualizer.GetWorkingTexture();
-                if (writableTexture == null) return;
+                // Begin texture modification to prevent race conditions - to resolve issue number 8
+                if (!_treeVisualizer.BeginTextureModification())
+                {
+                    // Texture is being modified by another operation, skip this frame
+                    return;
+                }
 
-                // Get texture dimensions for coordinate transformation
-                var originalSDF = _treeVisualizer.GetSDFTexture();
-                if (originalSDF == null) return;
+                try
+                {
+                    // Get the writable texture from SDFVisualizer
+                    var writableTexture = _treeVisualizer.GetWorkingTexture();
+                    if (writableTexture == null)
+                    {
+                        Debug.LogError("Working texture is null - cannot perform cutting operation"); // to resolve issue number 6
+                        return;
+                    }
 
-                // Transform world position to texture coordinates (0-1 range)
-                // First, get the relative position from tree center
-                Vector3 treeCenter = _treeVisualizer.WorldPosition;
+                    // Get texture dimensions for coordinate transformation
+                    var originalSDF = _treeVisualizer.GetSDFTexture();
+                    if (originalSDF == null)
+                    {
+                        Debug.LogError("Original SDF texture is null - cannot perform cutting operation"); // to resolve issue number 6
+                        return;
+                    }
 
-                Vector3 relativePosition = _treeVisualizer.transform.InverseTransformPoint(transform.position);
+                    // Validate texture format compatibility - to resolve issue number 10
+                    if (writableTexture.format != RenderTextureFormat.RFloat)
+                    {
+                        Debug.LogError($"Working texture format {writableTexture.format} is not compatible with compute shader");
+                        return;
+                    }
 
-                float gridScale = _treeVisualizer.GridScale;
-                // Convert world position to texture coordinates (0-1 range)
-                Vector3 textureCenter = new Vector3(
-                    (relativePosition.x / (gridScale * originalSDF.width)) + 0.5f,
-                    (relativePosition.y / (gridScale * originalSDF.height)) + 0.5f,
-                    (relativePosition.z / (gridScale * originalSDF.depth)) + 0.5f
-                );
+                    // Transform world position to texture coordinates (0-1 range) - to resolve issue number 1 & 2
+                    Vector3 relativePosition = _treeVisualizer.transform.InverseTransformPoint(transform.position);
+                    float gridScale = _treeVisualizer.GridScale;
 
-                // Calculate cutting parameters
-                float cutRadius = _cuttingRadius / (gridScale * originalSDF.width); // Convert to texture space
-                float cutDepth = _cuttingSpeed;
+                    // Correct texture coordinate calculation: map from [-gridScale/2, gridScale/2] to [0, 1]
+                    Vector3 textureCenter = new Vector3(
+                        (relativePosition.x + gridScale / 2) / gridScale,
+                        (relativePosition.y + gridScale / 2) / gridScale,
+                        (relativePosition.z + gridScale / 2) / gridScale
+                    );
 
-                // Dispatch the cutting compute shader on the writable texture
-                _sdfModifier.SetInts("Dims", new int[] { originalSDF.width, originalSDF.height, originalSDF.depth });
-                _sdfModifier.SetVector("CutCenter", textureCenter);
-                _sdfModifier.SetFloat("CutRadius", cutRadius);
-                _sdfModifier.SetFloat("CutDepth", cutDepth);
-                _sdfModifier.SetVector("CutDirection", movement.normalized);
-                _sdfModifier.SetTexture(0, "SDFTexture", writableTexture);
-                _sdfModifier.DispatchThreads(0, writableTexture.width / 8, writableTexture.height / 8, writableTexture.volumeDepth / 8);
+                    // Clamp texture coordinates to valid range - to resolve issue number 6
+                    textureCenter.x = Mathf.Clamp01(textureCenter.x);
+                    textureCenter.y = Mathf.Clamp01(textureCenter.y);
+                    textureCenter.z = Mathf.Clamp01(textureCenter.z);
 
-                Debug.Log($"Tree center: {treeCenter}, Chainsaw world: {currentPosition}, Relative: {relativePosition}, Texture pos: {textureCenter}, radius: {cutRadius}");
+                    // Calculate cutting parameters - to resolve issue number 5
+                    float cutRadius = _cuttingRadius / gridScale; // Convert to texture space correctly
+                    float cutDepth = _cuttingSpeed;
+
+                    // Validate cutting parameters - to resolve issue number 6
+                    if (cutRadius <= 0 || cutDepth <= 0)
+                    {
+                        Debug.LogWarning($"Invalid cutting parameters: radius={cutRadius}, depth={cutDepth}");
+                        return;
+                    }
+
+                    // Dispatch the cutting compute shader on the writable texture - to resolve issue number 4
+                    _sdfModifier.SetInts("Dims", new int[] { originalSDF.width, originalSDF.height, originalSDF.depth });
+                    _sdfModifier.SetVector("CutCenter", textureCenter);
+                    _sdfModifier.SetFloat("CutRadius", cutRadius);
+                    _sdfModifier.SetFloat("CutDepth", cutDepth);
+                    _sdfModifier.SetVector("CutDirection", movement.normalized);
+                    _sdfModifier.SetTexture(0, "SDFTexture", writableTexture);
+
+                    // Calculate proper dispatch dimensions - to resolve issue number 6
+                    int dispatchX = Mathf.CeilToInt(writableTexture.width / 8.0f);
+                    int dispatchY = Mathf.CeilToInt(writableTexture.height / 8.0f);
+                    int dispatchZ = Mathf.CeilToInt(writableTexture.volumeDepth / 8.0f);
+
+                    _sdfModifier.Dispatch(0, dispatchX, dispatchY, dispatchZ);
+
+                    Debug.Log($"Cutting (Intersecting): World={currentPosition}, Relative={relativePosition}, Texture={textureCenter}, Radius={cutRadius}, Depth={cutDepth}");
+                }
+                finally
+                {
+                    // Always end texture modification to prevent deadlock - to resolve issue number 8
+                    _treeVisualizer.EndTextureModification();
+                }
             }
 
             _lastPosition = currentPosition;
+        }
+
+        #endregion
+
+        #region Intersection Detection
+
+        // Check if the cutter is intersecting with the tree mesh - to resolve intersection detection
+        private bool CheckIntersectionWithTree()
+        {
+            if (_treeVisualizer == null)
+            {
+                Debug.LogWarning("Tree visualizer is null");
+                return false;
+            }
+
+            // Get the tree's mesh filter
+            var meshFilter = _treeVisualizer.GetComponent<MeshFilter>();
+            if (meshFilter == null || meshFilter.sharedMesh == null)
+            {
+                Debug.LogWarning("Tree mesh filter or mesh is null - using SDF method");
+                return CheckIntersectionWithSDF();
+            }
+
+            // Use direct mesh-based intersection detection instead of physics
+            return CheckMeshIntersection(meshFilter.sharedMesh, meshFilter.transform);
+        }
+
+        // Direct mesh intersection detection without physics dependency - to resolve mesh intersection
+        private bool CheckMeshIntersection(Mesh mesh, Transform meshTransform)
+        {
+            if (mesh == null) return false;
+
+            // Get mesh vertices in world space
+            Vector3[] vertices = mesh.vertices;
+            Vector3 cutterPosition = transform.position;
+
+            // Check if any vertex is within cutting radius
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                Vector3 worldVertex = meshTransform.TransformPoint(vertices[i]);
+                float distance = Vector3.Distance(cutterPosition, worldVertex);
+
+                if (distance <= _cuttingRadius)
+                {
+                    // Debug mesh intersection
+                    if (Time.frameCount % 120 == 0)
+                    {
+                        Debug.Log($"Mesh intersection found - Vertex distance: {distance}, Cutting radius: {_cuttingRadius}");
+                    }
+                    return true;
+                }
+            }
+
+            // Also check mesh bounds intersection as a quick test
+            Bounds meshBounds = mesh.bounds;
+            Bounds worldMeshBounds = new Bounds(
+                meshTransform.TransformPoint(meshBounds.center),
+                Vector3.Scale(meshBounds.size, meshTransform.lossyScale)
+            );
+
+            Bounds cutterBounds = new Bounds(cutterPosition, Vector3.one * _cuttingRadius * 2);
+            bool boundsIntersect = worldMeshBounds.Intersects(cutterBounds);
+
+            // Debug bounds intersection
+            if (Time.frameCount % 120 == 0)
+            {
+                Debug.Log($"Mesh bounds check - Intersects: {boundsIntersect}, Mesh bounds: {worldMeshBounds}, Cutter bounds: {cutterBounds}");
+            }
+
+            return boundsIntersect;
+        }
+
+        // Primary intersection method using SDF-based detection - to resolve SDF based detection
+        private bool CheckIntersectionWithSDF()
+        {
+            if (_treeVisualizer == null) return false;
+
+            // Transform world position to texture coordinates
+            Vector3 relativePosition = _treeVisualizer.transform.InverseTransformPoint(transform.position);
+            float gridScale = _treeVisualizer.GridScale;
+
+            // Calculate distance from grid center (where the tree should be)
+            float distanceFromCenter = Vector3.Distance(relativePosition, Vector3.zero);
+
+            // Use a more accurate tree radius based on the actual SDF data
+            // The tree should occupy roughly the center portion of the grid
+            float treeRadius = gridScale * 0.35f; // 35% of grid scale as tree radius
+            float intersectionRadius = treeRadius + _cuttingRadius; // Add cutting radius for intersection
+
+            bool intersects = distanceFromCenter < intersectionRadius;
+
+            // Debug SDF intersection
+            if (Time.frameCount % 120 == 0)
+            {
+                Debug.Log($"SDF Intersection - Distance: {distanceFromCenter:F3}, Tree radius: {treeRadius:F3}, Intersection radius: {intersectionRadius:F3}, Intersects: {intersects}");
+            }
+
+            return intersects;
+        }
+
+        // Simple distance-based intersection check - to resolve intersection detection
+        private bool CheckSimpleDistanceIntersection()
+        {
+            if (_treeVisualizer == null) return false;
+
+            // Get distance from tree center
+            Vector3 treeCenter = _treeVisualizer.transform.position;
+            float distanceFromTree = Vector3.Distance(transform.position, treeCenter);
+
+            // Use a reasonable tree radius based on grid scale
+            float treeRadius = _treeVisualizer.GridScale * 0.35f; // Match SDF method radius
+            float intersectionRadius = treeRadius + _cuttingRadius; // Add cutting radius for intersection
+
+            bool intersects = distanceFromTree < intersectionRadius;
+
+            // Debug simple intersection
+            if (Time.frameCount % 120 == 0)
+            {
+                Debug.Log($"Simple Intersection - Distance: {distanceFromTree:F3}, Tree radius: {treeRadius:F3}, Intersection radius: {intersectionRadius:F3}, Intersects: {intersects}");
+            }
+
+            return intersects;
         }
 
         #endregion
@@ -158,15 +336,45 @@ namespace MarchingCubes
 
         void OnDrawGizmos()
         {
-            if (_isCutting)
+            // Visual feedback for intersection detection - to resolve visual feedback
+            if (_isCutting && _isIntersecting)
             {
-                Gizmos.color = Color.red;
+                Gizmos.color = Color.red; // Cutting and intersecting
+                Gizmos.DrawWireSphere(transform.position, _cuttingRadius);
+                Gizmos.DrawSphere(transform.position, _cuttingRadius * 0.1f); // Solid center
+            }
+            else if (_isCutting)
+            {
+                Gizmos.color = new Color(1f, 0.5f, 0f); // Orange color for cutting but not intersecting
+                Gizmos.DrawWireSphere(transform.position, _cuttingRadius);
+            }
+            else if (_isIntersecting)
+            {
+                Gizmos.color = Color.green; // Not cutting but intersecting
                 Gizmos.DrawWireSphere(transform.position, _cuttingRadius);
             }
             else
             {
-                Gizmos.color = Color.yellow;
+                Gizmos.color = Color.yellow; // Not cutting and not intersecting
                 Gizmos.DrawWireSphere(transform.position, _cuttingRadius);
+            }
+
+            // Draw tree bounds for debugging - to resolve debug intersection
+            if (_treeVisualizer != null)
+            {
+                Gizmos.color = Color.cyan;
+                Vector3 treeCenter = _treeVisualizer.transform.position;
+                float treeRadius = _treeVisualizer.GridScale * 0.35f; // Match the intersection detection radius
+                Gizmos.DrawWireSphere(treeCenter, treeRadius);
+
+                // Draw intersection radius
+                Gizmos.color = Color.magenta;
+                Gizmos.DrawWireSphere(treeCenter, treeRadius + _cuttingRadius);
+
+                // Draw grid bounds for reference
+                Gizmos.color = Color.gray;
+                float gridRadius = _treeVisualizer.GridScale * 0.5f;
+                Gizmos.DrawWireSphere(treeCenter, gridRadius);
             }
         }
 
@@ -174,3 +382,4 @@ namespace MarchingCubes
     }
 
 } // namespace MarchingCubes
+

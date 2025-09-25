@@ -262,9 +262,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 179d55d18a09a2b49ace671bc73b3573, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  _cuttingRadius: 0.5
-  _cuttingSpeed: 20
-  _movementSpeed: 5
+  _cuttingRadius: 0.01
+  _cuttingSpeed: 5
+  _movementSpeed: 2
   _treeVisualizer: {fileID: 748373719}
   _sdfModifier: {fileID: 7200000, guid: cad1948ac4107f04d9f88bf4adad35f6, type: 3}
   _editCompute: {fileID: 7200000, guid: 2790effb2b267e74e9e6b5cb112a0092, type: 3}
@@ -349,8 +349,8 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0.41, y: 0.4, z: -2.93}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
+  m_LocalScale: {x: 0.3, y: 0.3, z: 0.3}
+  m_ConstrainProportionsScale: 1
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}

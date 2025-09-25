@@ -34,6 +34,10 @@ namespace MarchingCubes
         MeshBuilder _builder;
         [SerializeField] RenderTexture _workingSDFTexture;
 
+        // Synchronization for race condition prevention - to resolve issue number 8
+        private bool _isTextureBeingModified = false;
+        private object _textureLock = new object();
+
         #endregion
 
         #region MonoBehaviour implementation
@@ -69,7 +73,7 @@ namespace MarchingCubes
             _voxelBuffer = new ComputeBuffer(VoxelCount, sizeof(float));
             _builder = new MeshBuilder(_dimensions, _triangleBudget, _builderCompute);
 
-            InvokeRepeating("InitializeWorkingTextureWithOriginalSDF2", 5.0f, 1.0f);
+            // InvokeRepeating("InitializeWorkingTextureWithOriginalSDF2", 5.0f, 1.0f);
         }
 
         void OnDestroy()
@@ -83,6 +87,16 @@ namespace MarchingCubes
         {
             if (_sdfTexture == null || _voxelBuffer == null || _builder == null || _workingSDFTexture == null)
                 return;
+
+            // Check if texture is being modified to prevent race conditions - to resolve issue number 8
+            lock (_textureLock)
+            {
+                if (_isTextureBeingModified)
+                {
+                    // Skip this frame if texture is being modified
+                    return;
+                }
+            }
 
             // Always use the working texture (initialized with original SDF data)
             _sdfCompute.SetInts("Dims", _dimensions);
@@ -112,6 +126,34 @@ namespace MarchingCubes
         {
             if (_sdfCompute != null && _sdfTexture != null && _workingSDFTexture != null)
             {
+                // Use direct compute shader copy instead of buffer approach - to resolve issue number 6
+                // This is more reliable and avoids potential data conversion errors
+                try
+                {
+                    // Use the CopySDF kernel from SDFToVolume compute shader
+                    _sdfCompute.SetInts("Dims", _dimensions);
+                    _sdfCompute.SetTexture(1, "SourceSDF", _sdfTexture); // kernel 1 is CopySDF
+                    _sdfCompute.SetTexture(1, "DestSDF", _workingSDFTexture);
+                    _sdfCompute.Dispatch(1, Mathf.CeilToInt(_dimensions.x / 8.0f),
+                                              Mathf.CeilToInt(_dimensions.y / 8.0f),
+                                              Mathf.CeilToInt(_dimensions.z / 8.0f));
+
+                    Debug.Log("Working texture initialized with original SDF data using direct compute shader copy");
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogError($"Failed to initialize working texture with compute shader: {e.Message}");
+                    // Fallback to buffer method if compute shader copy fails
+                    FallbackInitializeWorkingTexture();
+                }
+            }
+        }
+
+        // Fallback method for working texture initialization - to resolve issue number 6
+        private void FallbackInitializeWorkingTexture()
+        {
+            try
+            {
                 // Create a temporary buffer to hold the SDF data
                 var tempBuffer = new ComputeBuffer(VoxelCount, sizeof(float));
 
@@ -122,14 +164,15 @@ namespace MarchingCubes
                 _sdfCompute.SetBuffer(0, "Voxels", tempBuffer);
                 _sdfCompute.DispatchThreads(0, _dimensions);
 
-                // Now copy buffer to working texture using a different approach
-                // We'll use the SDFToVolume compute shader but with the working texture as output
-                // This requires modifying the compute shader to support writing to RenderTexture
-                // For now, let's use a simpler approach - copy the buffer data to the working texture
+                // Copy buffer to working texture
                 CopyBufferToRenderTexture(tempBuffer, _workingSDFTexture);
 
                 tempBuffer.Dispose();
-                Debug.Log("Working texture initialized with original SDF data");
+                Debug.Log("Working texture initialized using fallback method");
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"Fallback initialization also failed: {e.Message}");
             }
         }
 
@@ -225,6 +268,27 @@ namespace MarchingCubes
 
         public float GridScale => _gridScale;
         public Vector3 WorldPosition => transform.position;
+
+        // Methods for synchronization with cutting operations - to resolve issue number 8
+        public bool BeginTextureModification()
+        {
+            lock (_textureLock)
+            {
+                if (_isTextureBeingModified)
+                    return false; // Already being modified
+
+                _isTextureBeingModified = true;
+                return true;
+            }
+        }
+
+        public void EndTextureModification()
+        {
+            lock (_textureLock)
+            {
+                _isTextureBeingModified = false;
+            }
+        }
 
         #endregion
     }
