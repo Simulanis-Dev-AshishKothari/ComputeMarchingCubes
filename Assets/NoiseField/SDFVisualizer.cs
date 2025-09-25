@@ -15,6 +15,7 @@ namespace MarchingCubes
         [SerializeField] Texture3D _sdfTexture2 = null;
         [SerializeField] bool _showGridGizmos = true;
         [SerializeField] Color _gridColor = Color.yellow;
+        bool sdf2 = false;
 
         #endregion
 
@@ -67,6 +68,8 @@ namespace MarchingCubes
 
             _voxelBuffer = new ComputeBuffer(VoxelCount, sizeof(float));
             _builder = new MeshBuilder(_dimensions, _triangleBudget, _builderCompute);
+
+            InvokeRepeating("InitializeWorkingTextureWithOriginalSDF2", 5.0f, 1.0f);
         }
 
         void OnDestroy()
@@ -129,7 +132,7 @@ namespace MarchingCubes
                 Debug.Log("Working texture initialized with original SDF data");
             }
         }
-        
+
         [ContextMenu("SDF 2")]
         private void InitializeWorkingTextureWithOriginalSDF2()
         {
@@ -141,7 +144,17 @@ namespace MarchingCubes
                 // Copy original SDF to buffer using SDFToVolume kernel
                 _sdfCompute.SetInts("Dims", _dimensions);
                 _sdfCompute.SetFloat("Scale", _gridScale);
-                _sdfCompute.SetTexture(0, "SDFTexture", _sdfTexture2);
+                if (!sdf2)
+                {
+                    _sdfCompute.SetTexture(0, "SDFTexture", _sdfTexture2);
+                    sdf2 = true;
+                }
+                else
+                {
+                    _sdfCompute.SetTexture(0, "SDFTexture", _sdfTexture);
+                    sdf2 = false;
+                }
+
                 _sdfCompute.SetBuffer(0, "Voxels", tempBuffer);
                 _sdfCompute.DispatchThreads(0, _dimensions);
 
